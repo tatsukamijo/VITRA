@@ -193,3 +193,6 @@ benchmark*/
 
 .DS_Store
 
+# pixi environments
+.pixi/*
+!.pixi/config.toml

@@ -23,10 +23,8 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies=[
-    "torch==2.3.0",
-    "torchvision==0.18.0",
-    "torchaudio==2.3.0",
-    "PyYAML==6.0.2",
+    # torch, torchvision, torchaudio provided by conda (see [tool.pixi.dependencies])
+    "PyYAML>=6.0.2",
     "hydra-colorlog>=1.2.0",
     "hydra-core>=1.1.1",
     "deepspeed==0.16.5",
@@ -67,11 +65,11 @@ dependencies=[
 ]
 
 [project.optional-dependencies]
-visulization = [
+visualization = [
     "smplx",
     "projectaria_tools",
     "chumpy @ git+https://github.com/mattloper/chumpy.git@master",
-    "pytorch3d @git+https://github.com/facebookresearch/pytorch3d.git@stable#egg=pytorch3d"
+    "pytorch3d @ git+https://github.com/facebookresearch/pytorch3d.git@stable",
 ]
 
 [project.urls]
@@ -83,3 +81,27 @@ exclude = ["bash*", "imgs*", "eval", "tools*", "scripts*", "tests*"]
 
 [tool.wheel]
 exclude = ["bash*", "imgs*", "eval", "tools*", "scripts*", "tests*"]
+[tool.pixi.workspace]
+channels = ["pytorch", "nvidia", "conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.dependencies]
+python = ">=3.10,<3.13"
+numpy = "<2.0"
+pytorch = "==2.3.0"
+torchvision = "==0.18.0"
+torchaudio = "==2.3.0"
+setuptools = "*"
+pip = "*"
+
+[tool.pixi.pypi-dependencies]
+vitra = { path = ".", editable = true }
+
+[tool.pixi.feature.visualization.pypi-options]
+no-build-isolation = ["pytorch3d", "chumpy"]
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+visualization = { features = ["visualization"], solve-group = "default" }
+
+[tool.pixi.tasks]
