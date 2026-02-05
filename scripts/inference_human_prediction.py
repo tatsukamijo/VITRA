@@ -224,6 +224,10 @@ def main():
         # Model inference using service (includes normalization, padding, and unnormalization)
         print(f"Running VLA inference...")
         sample_times = args.sample_times
+
+        import time
+        start_time = time.perf_counter()
+
         unnorm_action = vla_service.predict(
             image=image_resized_np,
             instruction=instruction,
@@ -235,6 +239,9 @@ def main():
             cfg_scale=5.0,
             sample_times=sample_times,
         )
+
+        inference_time = (time.perf_counter() - start_time) * 1000
+        print(f"[Benchmark] Inference time: {inference_time:.1f} ms ({1000/inference_time:.1f} Hz)")
         
         fx_exo = intrinsics[0, 0]
         fy_exo = intrinsics[1, 1]

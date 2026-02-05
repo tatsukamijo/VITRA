@@ -498,6 +498,10 @@ class VITRA_Paligemma(nn.Module):
         current_state = current_state.to(input_ids.device)
         fov = fov.to(input_ids.device) if fov is not None else None
 
+        import time
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+
         output_hs, inputs_masks = self.prepare_vlm_features(
             pixel_value,
             input_ids,
@@ -507,6 +511,10 @@ class VITRA_Paligemma(nn.Module):
             fov,
             use_cache=use_cache,
         )
+
+        torch.cuda.synchronize()
+        t1 = time.perf_counter()
+
         # handle multiple samples for one input
         samples, _ = self._forward_act_model(
             vlm_features = output_hs,
@@ -520,6 +528,14 @@ class VITRA_Paligemma(nn.Module):
             use_ddim = use_ddim,
             num_ddim_steps = num_ddim_steps,
         )
+
+        torch.cuda.synchronize()
+        t2 = time.perf_counter()
+
+        vlm_time = (t1 - t0) * 1000
+        diffusion_time = (t2 - t1) * 1000
+        print(f"[Benchmark] VLM forward: {vlm_time:.1f} ms | Diffusion: {diffusion_time:.1f} ms | Total: {vlm_time + diffusion_time:.1f} ms")
+
         action_np = samples.cpu().numpy() * x_mask.cpu().numpy()    # sample_times x T x D
         return action_np
 
