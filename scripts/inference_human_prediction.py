@@ -1,32 +1,35 @@
+import argparse
+import json
+import math
+import multiprocessing as mp
 import os
 import sys
-import cv2
-import math
-import json
-import torch
-import argparse
-import numpy as np
-from PIL import Image
-from PIL import ImageOps
 from pathlib import Path
-import multiprocessing as mp
-from vitra.models import VITRA_Paligemma, load_model
-from vitra.utils.data_utils import resize_short_side_to_target, load_normalizer, recon_traj
-from vitra.utils.config_utils import load_config
-from vitra.datasets.human_dataset import pad_state_human, pad_action
+
+import cv2
+import numpy as np
+import torch
+from PIL import Image, ImageOps
 from scipy.spatial.transform import Rotation as R
-from vitra.datasets.dataset_utils import (
-    compute_new_intrinsics_resize, 
-    calculate_fov,
-    ActionFeature,
-    StateFeature,
-)
+
+from vitra.datasets.dataset_utils import (ActionFeature, StateFeature,
+                                          calculate_fov,
+                                          compute_new_intrinsics_resize)
+from vitra.datasets.human_dataset import pad_action, pad_state_human
+from vitra.models import VITRA_Paligemma, load_model
+from vitra.utils.config_utils import load_config
+from vitra.utils.data_utils import (load_normalizer, recon_traj,
+                                    resize_short_side_to_target)
 
 repo_root = Path(__file__).parent.parent  # VITRA/
 sys.path.insert(0, str(repo_root))
 
-from visualization.visualize_core import HandVisualizer, normalize_camera_intrinsics, save_to_video, Renderer, process_single_hand_labels
 from visualization.visualize_core import Config as HandConfig
+from visualization.visualize_core import (HandVisualizer, Renderer,
+                                          normalize_camera_intrinsics,
+                                          process_single_hand_labels,
+                                          save_to_video)
+
 
 def main():
     """
@@ -79,9 +82,10 @@ def main():
     parser.add_argument('--instruction', type=str, default="Left: Put the trash into the garbage. Right: None.", help='Text instruction for hand motion')
     parser.add_argument('--sample_times', type=int, default=4, help='Number of action samples to generate for diversity')
     parser.add_argument('--fps', type=int, default=8, help='Frames per second for output video')
-    
+
     # Advanced Options
     parser.add_argument('--save_state_local', action='store_true', help='Save hand state locally as .npy file')
+    parser.add_argument('--side_view', action='store_true', default=True, help='Enable side view visualization showing depth and height')
 
     # === Environment Configuration ===
     # Disable tokenizers parallelism to avoid deadlocks in multi-process data loading
@@ -247,6 +251,10 @@ def main():
         fy_exo = intrinsics[1, 1]
         renderer = Renderer(w, h, (fx_exo, fy_exo), 'cuda')
 
+        # Side view renderer (same size as main view)
+        if args.side_view:
+            renderer_side = Renderer(w, h, (fx_exo, fy_exo), 'cuda')
+
         T = len(action_mask) + 1
         traj_right_list = np.zeros((sample_times, T, 51), dtype=np.float32)
         traj_left_list = np.zeros((sample_times, T, 51), dtype=np.float32)
@@ -302,7 +310,7 @@ def main():
             # Use resized image for visualization (convert RGB to BGR)
             image_bgr = image_resized_np[..., ::-1]
             resize_video_frames = [image_bgr] * T
-            save_frames = visualizer._render_hand_trajectory(
+            save_frames_ego = visualizer._render_hand_trajectory(
                 resize_video_frames,
                 hand_traj_wordspace,
                 hand_mask,
@@ -310,8 +318,27 @@ def main():
                 renderer,
                 mode='first'
             )
-        
-            all_rendered_frames.append(save_frames)
+
+            if args.side_view:
+                # Render side view for depth/height visualization
+                save_frames_side = render_side_view(
+                    verts_left_worldspace,
+                    verts_right_worldspace,
+                    hand_mask,
+                    renderer_side,
+                    visualizer.faces_left,
+                    visualizer.faces_right,
+                    visualizer.config.LEFT_COLOR,
+                    visualizer.config.RIGHT_COLOR,
+                )
+                # Concatenate egocentric and side view horizontally
+                combined_sample_frames = [
+                    np.concatenate([ego, side], axis=1)
+                    for ego, side in zip(save_frames_ego, save_frames_side)
+                ]
+                all_rendered_frames.append(combined_sample_frames)
+            else:
+                all_rendered_frames.append(save_frames_ego)
         
         # Concatenate all samples spatially into a single video
         # all_rendered_frames: list of sample_times frame lists
@@ -390,16 +417,16 @@ def get_state(hand_data, hand_side='right'):
 def euler_traj_to_rotmat_traj(euler_traj, T):
     """
     Convert Euler angle trajectory to rotation matrix trajectory.
-    
-    Converts a sequence of hand poses represented as Euler angles into 
+
+    Converts a sequence of hand poses represented as Euler angles into
     rotation matrices suitable for MANO model input.
-    
+
     Args:
         euler_traj (np.ndarray): Hand pose trajectory as Euler angles.
                                  Shape: [T, 45] where T is number of timesteps
                                  and 45 = 15 joints * 3 Euler angles per joint
         T (int): Number of timesteps in the trajectory
-        
+
     Returns:
         np.ndarray: Rotation matrix trajectory. Shape: [T, 15, 3, 3]
                     where each [3, 3] block is a rotation matrix for one joint
@@ -409,6 +436,96 @@ def euler_traj_to_rotmat_traj(euler_traj, T):
     pose_matrices = pose_matrices.reshape(T, 15, 3, 3)  # [T, 15, 3, 3]
 
     return pose_matrices
+
+
+def render_side_view(
+    verts_left_worldspace: np.ndarray,
+    verts_right_worldspace: np.ndarray,
+    hand_mask: tuple,
+    renderer: 'Renderer',
+    faces_left: torch.Tensor,
+    faces_right: torch.Tensor,
+    left_color: np.ndarray,
+    right_color: np.ndarray,
+) -> list:
+    """
+    Render side view of hand trajectory (view from the left).
+    Shows depth (Z) as horizontal and height (Y) as vertical.
+    """
+    left_hand_mask, right_hand_mask = hand_mask
+    T = len(left_hand_mask)
+
+    # Side view camera rotation (viewing from -X direction)
+    R_side = np.array([
+        [0, 0, -1],
+        [0, 1, 0],
+        [1, 0, 0],
+    ], dtype=np.float32)
+
+    # Compute trajectory center for camera positioning
+    all_verts = []
+    for t in range(T):
+        if left_hand_mask[t]:
+            all_verts.append(verts_left_worldspace[t])
+        if right_hand_mask[t]:
+            all_verts.append(verts_right_worldspace[t])
+
+    if len(all_verts) == 0:
+        bg_color = np.full((renderer.height, renderer.width, 3), 200, dtype=np.uint8)
+        return [bg_color.copy() for _ in range(T)]
+
+    all_verts = np.concatenate(all_verts, axis=0)
+    center = all_verts.mean(axis=0)
+
+    # Camera distance based on trajectory extent
+    x_range = all_verts[:, 0].max() - all_verts[:, 0].min()
+    y_range = all_verts[:, 1].max() - all_verts[:, 1].min()
+    z_range = all_verts[:, 2].max() - all_verts[:, 2].min()
+    side_offset = max(x_range, y_range, z_range, 0.3) * 2.0
+
+    # Camera extrinsics
+    cam_pos_world = np.array([center[0] - side_offset, center[1], center[2]])
+    t_side = (-R_side @ cam_pos_world.reshape(3, 1)).astype(np.float32)
+
+    # Transform vertices to side camera space
+    verts_left_side = np.zeros_like(verts_left_worldspace)
+    verts_right_side = np.zeros_like(verts_right_worldspace)
+    for t in range(T):
+        verts_left_side[t] = (R_side @ verts_left_worldspace[t].T + t_side).T
+        verts_right_side[t] = (R_side @ verts_right_worldspace[t].T + t_side).T
+
+    bg_color = np.full((renderer.height, renderer.width, 3), 200, dtype=np.uint8)
+    frames = []
+
+    for traj_idx in range(T):
+        curr_img = bg_color.copy().astype(np.float32) / 255.0
+
+        verts_list = []
+        faces_list = []
+        colors_list = []
+
+        if left_hand_mask[traj_idx]:
+            verts_list.append(torch.from_numpy(verts_left_side[traj_idx]).float().cuda())
+            colors_list.append(torch.from_numpy(left_color).float().unsqueeze(0).repeat(778, 1).cuda())
+            faces_list.append(faces_left)
+
+        if right_hand_mask[traj_idx]:
+            verts_list.append(torch.from_numpy(verts_right_side[traj_idx]).float().cuda())
+            colors_list.append(torch.from_numpy(right_color).float().unsqueeze(0).repeat(778, 1).cuda())
+            faces_list.append(faces_right)
+
+        if len(verts_list) > 0:
+            rend, mask = renderer.render(verts_list, faces_list, colors_list)
+            rend = rend[..., ::-1]  # RGB to BGR
+            color_mesh = rend.astype(np.float32) / 255.0
+            valid_mask = mask[..., None].astype(np.float32)
+            curr_img = curr_img[:, :, :3] * (1 - valid_mask) + color_mesh[:, :, :3] * valid_mask
+
+        final_frame = (curr_img * 255).astype(np.uint8)
+        final_frame = cv2.cvtColor(final_frame, cv2.COLOR_BGR2RGB)
+        frames.append(final_frame)
+
+    return frames
 
 
 def _hand_reconstruction_worker(args_dict, task_queue, result_queue):
@@ -492,10 +609,10 @@ def _vla_inference_worker(configs_dict, task_queue, result_queue):
     Persistent worker for VLA model inference that runs in a separate process.
     Keeps model loaded and processes multiple requests until shutdown signal.
     """
+    from vitra.datasets.dataset_utils import ActionFeature, StateFeature
+    from vitra.datasets.human_dataset import pad_action, pad_state_human
     from vitra.models import load_model
     from vitra.utils.data_utils import load_normalizer
-    from vitra.datasets.human_dataset import pad_state_human, pad_action
-    from vitra.datasets.dataset_utils import ActionFeature, StateFeature
     
     model = None
     normalizer = None
