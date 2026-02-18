@@ -93,6 +93,7 @@ torchvision = "==0.18.0"
 torchaudio = "==2.3.0"
 setuptools = "*"
 pip = "*"
+ffmpeg = ">=6"
 
 [tool.pixi.pypi-dependencies]
 vitra = { path = ".", editable = true }
