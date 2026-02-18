@@ -15,4 +15,9 @@ HAND_MIXTURES: Dict[str, List[Tuple[str, float]]] = {
         ("epic", 1.0),
         ('ssv2', 5.0),
     ],
+    # === Ego4D only ===
+    "ego4d_only": [
+        ("ego4d_cooking_and_cleaning", 1.0),
+        ("ego4d_other", 0.5),
+    ],
 }
