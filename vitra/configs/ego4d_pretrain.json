@@ -45,7 +45,7 @@
         "learning_rate": 1e-05,
         "weight_decay": 0.1,
         "max_epochs": 100000,
-        "max_steps": 2000000,
+        "max_steps": 85000,
         "reduce_in_full_precision": true,
         "enable_mixed_precision_training": false,
         "enable_gradient_checkpointing": true,
